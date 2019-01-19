@@ -1,0 +1,265 @@
+---
+title: "Bing machine"
+date: "January 18, 2019"
+output:
+  html_document:
+    fig_caption: yes
+    theme: united
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(lme4)
+library(readr)
+library(tidyverse)
+library(sjPlot)
+library(ggthemes)
+library(gridExtra)
+library(ggpubr)
+library(corrr)
+library(reshape2)
+library(trimr)
+
+source("Roger_functions/diagnostic_fcns.r")
+source("Roger_functions/glmm_stability.r")
+source("Roger_functions/boot_glmm.r")
+```
+
+```{r loading data, include = FALSE}
+bingchild<-read.csv("bingdataR.csv", header=T)
+```
+
+```{r data preparation, include=FALSE}
+bingchild$z.trialno<-as.vector(scale(bingchild$trialno))
+bingchild$z.age=as.vector(scale(bingchild$age))
+bingchild$id=as.factor(bingchild$id)
+
+bingchild$agecat=relevel(bingchild$agecat, ref="three")
+bingchild$condition=relevel(bingchild$condition, ref="causal")
+
+
+#coding dummy variables before centering the slopes
+bingchild$sex.m<-as.numeric(bingchild$sex==levels(bingchild$sex)[2])
+bingchild$condition.arbitrary<-as.numeric(bingchild$condition==levels(bingchild$condition)[2]) ##CJV: condition as categorical variable
+bingchild$agecat.four<-as.numeric(bingchild$agecat==levels(bingchild$agecat)[3])
+bingchild$agecat.five<-as.numeric(bingchild$agecat==levels(bingchild$agecat)[2])
+bingchild$agecat.six<-as.numeric(bingchild$agecat==levels(bingchild$agecat)[4]) #is this correct?# CJV: yes
+
+#centering the slopes
+bingchild$sex.m.c<-bingchild$sex.m -mean(bingchild$sex.m)
+bingchild$agecat.four.c=bingchild$agecat.four-mean(bingchild$agecat.four)
+bingchild$agecat.five.c=bingchild$agecat.five-mean(bingchild$agecat.five)
+bingchild$agecat.six.c=bingchild$agecat.four-mean(bingchild$agecat.four)
+```
+
+
+
+***
+
+```{r eval=FALSE, echo=FALSE}
+xx.fe.re=fe.re.tab(fe.model="correct ~ agecat*condition + z.trialno + sex  ",
+                   re="(1|id)+ (1|boxtype)",
+                   data=data.frame(bingchild))
+xx.fe.re$summary
+```
+
+###GLMM  
+
+```{r include=FALSE}
+contr=glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=10000000))
+```
+
+####Full model
+```{r}
+glmm01_full=glmer(correct ~ agecat*condition + z.trialno + sex + 
+                    (1|id) + (1|boxtype) + (0+z.trialno|id),data=bingchild,
+                    family=binomial, control=contr) 
+```
+
+####Null model	 
+```{r echo=FALSE}
+glmm01_null=glmer(correct ~ 1+
+                    (1|id) + (1|boxtype) + (0+z.trialno|id),data=bingchild,
+                    family=binomial, control=contr) 
+```
+
+  + Full-null model comparison  
+```{r echo=FALSE}	 
+round(anova(glmm01_null, glmm01_full, test="Chisq"),3)
+```
+
+#####Model output
+  + Coefficients
+```{r echo=FALSE}
+round(summary(glmm01_full)$coefficients, 3)
+```
+
+
+  + Individual predictors: likelihood ratio tests  
+Drop1: P values for the individual effects were based on likelihood ratio tests comparing the full with respective reduced models (Barr et al., 2013; R function drop1 with argument 'test' set to "Chisq"). 
+
+```{r echo=FALSE}
+xdrop1=drop1(glmm01_full, test="Chisq",control=contr)
+round(xdrop1,3)
+```
+
+***
+
+###Wilcoxon signed rank tests
+
+```{r include=FALSE}
+#install.packages("exactRankTests")
+library(exactRankTests)
+
+better.wilcox=function(var1){
+  test.data=data.frame(var1)
+  test.data=subset( test.data, var1 !=0.5)
+  N=nrow(test.data)
+  w.res=wilcox.exact (test.data$var1, paired=F, exact=T, mu=0.5, alternative = c("two.sided"))
+  wT=w.res$statistic
+  wT=max(c(wT, N*(N+1)/2- wT))
+return(data.frame(T.plus=wT, N=N, P=w.res$p.value) )
+}
+
+better.wilcox2=function(var1, var2){
+  test.data=data.frame(var1, var2)
+  test.data=subset( test.data, var1 != var2)
+  N=nrow(test.data)
+  w.res=wilcox.exact (test.data$var1, test.data$var2, paired=T, exact=T, alternative = c("two.sided"))
+  wT=w.res$statistic
+  wT=max(c(wT, N*(N+1)/2- wT))
+return(data.frame(T.plus=wT, N=N, P=w.res$p.value) )
+}
+```
+
+```{r data aggregation, include=FALSE}
+
+bingchild_individual <- bingchild %>%
+  filter(!is.na(correct)) %>%
+  group_by(agecat, condition, id) %>% 
+  summarize(bing_correct = mean(correct)) %>% 
+  add_count(bing_correct)
+
+bingchild_individual_causal <- bingchild %>%
+  filter(!is.na(correct)) %>%
+  filter(condition=="causal") %>%
+  group_by(agecat,id) %>% 
+  summarize(bing_correct = mean(correct)) %>% 
+  add_count(bing_correct)
+
+bingchild_individual_arbitrary <- bingchild %>%
+  filter(!is.na(correct)) %>%
+  filter(condition=="arbitrary") %>%
+  group_by(agecat,id) %>% 
+  summarize(bing_correct = mean(correct)) %>% 
+  add_count(bing_correct)
+
+
+```
+
+
+#####Causal condition  
+```{r echo=FALSE}
+wt<-better.wilcox( bingchild_individual_causal[bingchild_individual_causal$agecat=="three",]$bing_correct) 
+
+```
+* 3-y-olds:  Median = `r round(median(bingchild_individual_causal[bingchild_individual_causal$agecat=="three",]$bing_correct), 2)`, T<sup>+</sup>=`r wt$T.plus`, N=`r wt$N`, *p*=`r round(wt$P,3)`
+
+```{r echo=FALSE}
+wt<-better.wilcox( bingchild_individual_causal[bingchild_individual_causal$agecat=="four",]$bing_correct) 
+
+```
+* 4-y-olds:  Median = `r round(median(bingchild_individual_causal[bingchild_individual_causal$agecat=="four",]$bing_correct), 2)`, T<sup>+</sup>=`r wt$T.plus`, N=`r wt$N`, *p*=`r round(wt$P,3)`
+
+```{r echo=FALSE}
+wt<-better.wilcox( bingchild_individual_causal[bingchild_individual_causal$agecat=="five",]$bing_correct) 
+
+```
+* 5-y-olds:  Median = `r round(median(bingchild_individual_causal[bingchild_individual_causal$agecat=="five",]$bing_correct), 2)`, T<sup>+</sup>=`r wt$T.plus`, N=`r wt$N`, *p*=`r round(wt$P,3)`
+
+```{r echo=FALSE}
+wt<-better.wilcox( bingchild_individual_causal[bingchild_individual_causal$agecat=="six",]$bing_correct) 
+
+```
+* 6-y-olds:  Median = `r round(median(bingchild_individual_causal[bingchild_individual_causal$agecat=="six",]$bing_correct), 2)`, T<sup>+</sup>=`r wt$T.plus`, N=`r wt$N`, *p*=`r round(wt$P,3)`
+
+
+
+#####Arbitrary condition  
+```{r echo=FALSE}
+wt<-better.wilcox( bingchild_individual_arbitrary[bingchild_individual_arbitrary$agecat=="three",]$bing_correct) 
+
+```
+* 3-y-olds:  Median = `r round(median(bingchild_individual_arbitrary[bingchild_individual_arbitrary$agecat=="three",]$bing_correct), 2)`, T<sup>+</sup>=`r wt$T.plus`, N=`r wt$N`, *p*=`r round(wt$P,3)`
+
+```{r echo=FALSE}
+wt<-better.wilcox( bingchild_individual_arbitrary[bingchild_individual_arbitrary$agecat=="four",]$bing_correct) 
+
+```
+* 4-y-olds:  Median = `r round(median(bingchild_individual_arbitrary[bingchild_individual_arbitrary$agecat=="four",]$bing_correct), 2)`, T<sup>+</sup>=`r wt$T.plus`, N=`r wt$N`, *p*=`r round(wt$P,3)`
+
+```{r echo=FALSE}
+wt<-better.wilcox( bingchild_individual_arbitrary[bingchild_individual_arbitrary$agecat=="five",]$bing_correct) 
+
+```
+* 5-y-olds:  Median = `r round(median(bingchild_individual_arbitrary[bingchild_individual_arbitrary$agecat=="five",]$bing_correct), 2)`, T<sup>+</sup>=`r wt$T.plus`, N=`r wt$N`, *p*=`r round(wt$P,3)`
+
+```{r echo=FALSE}
+wt<-better.wilcox( bingchild_individual_arbitrary[bingchild_individual_arbitrary$agecat=="six",]$bing_correct) 
+
+```
+* 6-y-olds:  Median = `r round(median(bingchild_individual_arbitrary[bingchild_individual_arbitrary$agecat=="six",]$bing_correct), 2)`, T<sup>+</sup>=`r wt$T.plus`, N=`r wt$N`, *p*=`r round(wt$P,3)`
+
+###Mann-Whitney U-Test  
+
+####Causal vs arbitrary condition
+```{r echo=FALSE}
+mt<-wilcox.exact(bingchild_individual[bingchild_individual$agecat=="three",]$bing_correct~bingchild_individual[bingchild_individual$agecat=="three",]$condition,exact=T)
+#The test statistic is 'U', despite labelled 'W'but it is not always the smaller of the two U-values to get the smaller (its a convention to indicate this) use:
+u_mt<-min(c(mt$statistic, prod(table(bingchild_individual[bingchild_individual$agecat=="three",]$condition))-mt$statistic))
+#to get the sample sizes use:
+n1_mt<-table(bingchild_individual[bingchild_individual$agecat=="three",]$condition)[1]
+n2_mt<-table(bingchild_individual[bingchild_individual$agecat=="three",]$condition)[2]
+```
+* 3-y-olds: Difference between causal and arbitrary condition: U=`r u_mt`, N<sub>causal</sub>=`r n1_mt`, N<sub>arbitrary</sub>=`r n2_mt`, *p*=`r round(mt$p.value, 3)`
+
+```{r echo=FALSE}
+mt<-wilcox.exact(bingchild_individual[bingchild_individual$agecat=="four",]$bing_correct~bingchild_individual[bingchild_individual$agecat=="four",]$condition,exact=T)
+#The test statistic is 'U', despite labelled 'W'but it is not always the smaller of the two U-values to get the smaller (its a convention to indicate this) use:
+u_mt<-min(c(mt$statistic, prod(table(bingchild_individual[bingchild_individual$agecat=="four",]$condition))-mt$statistic))
+#to get the sample sizes use:
+n1_mt<-table(bingchild_individual[bingchild_individual$agecat=="four",]$condition)[1]
+n2_mt<-table(bingchild_individual[bingchild_individual$agecat=="four",]$condition)[2]
+```
+* 4-y-olds: Difference between causal and arbitrary condition: U=`r u_mt`, N<sub>causal</sub>=`r n1_mt`, N<sub>arbitrary</sub>=`r n2_mt`, *p*=`r round(mt$p.value, 3)`
+
+```{r echo=FALSE}
+mt<-wilcox.exact(bingchild_individual[bingchild_individual$agecat=="five",]$bing_correct~bingchild_individual[bingchild_individual$agecat=="five",]$condition,exact=T)
+#The test statistic is 'U', despite labelled 'W'but it is not always the smaller of the two U-values to get the smaller (its a convention to indicate this) use:
+u_mt<-min(c(mt$statistic, prod(table(bingchild_individual[bingchild_individual$agecat=="five",]$condition))-mt$statistic))
+#to get the sample sizes use:
+n1_mt<-table(bingchild_individual[bingchild_individual$agecat=="five",]$condition)[1]
+n2_mt<-table(bingchild_individual[bingchild_individual$agecat=="five",]$condition)[2]
+```
+* 5-y-olds: Difference between causal and arbitrary condition: U=`r u_mt`, N<sub>causal</sub>=`r n1_mt`, N<sub>arbitrary</sub>=`r n2_mt`, *p*=`r round(mt$p.value, 3)`
+
+```{r echo=FALSE}
+mt<-wilcox.exact(bingchild_individual[bingchild_individual$agecat=="six",]$bing_correct~bingchild_individual[bingchild_individual$agecat=="six",]$condition,exact=T)
+#The test statistic is 'U', despite labelled 'W'but it is not always the smaller of the two U-values to get the smaller (its a convention to indicate this) use:
+u_mt<-min(c(mt$statistic, prod(table(bingchild_individual[bingchild_individual$agecat=="six",]$condition))-mt$statistic))
+#to get the sample sizes use:
+n1_mt<-table(bingchild_individual[bingchild_individual$agecat=="six",]$condition)[1]
+n2_mt<-table(bingchild_individual[bingchild_individual$agecat=="six",]$condition)[2]
+```
+* 6-y-olds: Difference between causal and arbitrary condition: U=`r u_mt`, N<sub>causal</sub>=`r n1_mt`, N<sub>arbitrary</sub>=`r n2_mt`, *p*=`r round(mt$p.value, 3)`
+
+
+
+
+
+
+
